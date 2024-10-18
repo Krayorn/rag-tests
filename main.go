@@ -8,18 +8,12 @@
 package main
 
 import (
-	"bytes"
 	"cmp"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"mime/multipart"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/google/generative-ai-go/genai"
@@ -64,7 +58,6 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /add/", server.addDocumentsHandler)
-	mux.HandleFunc("GET /add_local/", server.addLocalDocumentsHandler)
 	mux.HandleFunc("POST /query/", server.queryHandler)
 
 	port := cmp.Or(os.Getenv("SERVERPORT"), "9020")
@@ -132,143 +125,6 @@ func (rs *ragServer) addDocumentsHandler(w http.ResponseWriter, req *http.Reques
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-}
-
-func (rs *ragServer) addLocalDocumentsHandler(_ http.ResponseWriter, _ *http.Request) {
-	dirPath := "./files"
-
-	files, err := os.ReadDir(dirPath)
-	if err != nil {
-		log.Printf("Error reading directory %s: %v", dirPath, err)
-		return
-	}
-
-	docs := make([]string, 0)
-
-	for _, file := range files {
-		if !file.IsDir() {
-			fmt.Println(file.Name())
-			fullPath := filepath.Join(dirPath, file.Name())
-			er, _ := makeExtractorCall(fullPath)
-			for _, split := range er.ContentPerCharacters {
-				fmt.Println("------------------------")
-				fmt.Println(split.Content)
-				docs = append(docs, split.Content)
-			}
-		}
-	}
-
-	// Use the batch embedding API to embed all documents at once.
-	batch := rs.embModel.NewBatch()
-	for _, doc := range docs {
-		batch.AddContent(genai.Text(doc))
-	}
-	log.Printf("invoking embedding model with %v documents", len(docs))
-	rsp, err := rs.embModel.BatchEmbedContents(rs.ctx, batch)
-	if err != nil {
-		return
-	}
-	if len(rsp.Embeddings) != len(docs) {
-		return
-	}
-
-	// Convert our documents - along with their embedding vectors - into types
-	// used by the Weaviate client library.
-	objects := make([]*models.Object, len(docs))
-	for i, doc := range docs {
-		objects[i] = &models.Object{
-			Class: "Document",
-			Properties: map[string]any{
-				"text": doc,
-			},
-			Vector: rsp.Embeddings[i].Values,
-		}
-	}
-
-	// Store documents with embeddings in the Weaviate DB.
-	log.Printf("storing %v objects in weaviate", len(objects))
-	_, err = rs.wvClient.Batch().ObjectsBatcher().WithObjects(objects...).Do(rs.ctx)
-	if err != nil {
-		return
-	}
-
-}
-
-type ExtractorResult struct {
-	Content              string
-	ContentPerCharacters []Content `json:"contentPerCharacters"`
-}
-
-type Content struct {
-	Content string `json:"content"`
-}
-
-func makeExtractorCall(filePath string) (ExtractorResult, error) {
-	er := &ExtractorResult{}
-
-	file, err := os.Open(filePath)
-	fmt.Println("filepath", filePath)
-	if err != nil {
-		return *er, err
-	}
-	defer file.Close()
-
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-
-	type Formatter struct {
-		SplitPerCharactersRedundancy bool `json:"splitPerCharactersRedundancy"`
-		SplitPerCharactersCount      int  `json:"splitPerCharactersCount"`
-	}
-
-	formatter := Formatter{
-		SplitPerCharactersRedundancy: true,
-		SplitPerCharactersCount:      4000,
-	}
-
-	formatterJSON, err := json.Marshal(formatter)
-	if err != nil {
-		return *er, err
-	}
-
-	err = writer.WriteField("formatter", string(formatterJSON))
-	if err != nil {
-		return *er, err
-	}
-
-	part, err := writer.CreateFormFile("file", filepath.Base(filePath))
-	if err != nil {
-		return *er, err
-	}
-	_, _ = io.Copy(part, file)
-	err = writer.Close()
-	if err != nil {
-		return *er, err
-	}
-
-	req, _ := http.NewRequest("POST", "https://extractor.golem.ai/v3/analyse", body)
-	req.Header.Add("Authorization", "Basic "+basicAuth("extractor", os.Getenv("EXTRACTOR_PWD")))
-	req.Header.Add("Content-Type", writer.FormDataContentType())
-	client := &http.Client{}
-
-	response, err := client.Do(req)
-	if err != nil {
-		return *er, err
-	}
-
-	resBody, _ := io.ReadAll(response.Body)
-	_ = json.Unmarshal(resBody, er)
-
-	defer response.Body.Close()
-	fmt.Println("--------------------")
-	fmt.Println(er)
-	fmt.Println("--------------------")
-	return *er, nil
-}
-
-func basicAuth(username, password string) string {
-	auth := username + ":" + password
-	return base64.StdEncoding.EncodeToString([]byte(auth))
 }
 
 func (rs *ragServer) queryHandler(w http.ResponseWriter, req *http.Request) {
