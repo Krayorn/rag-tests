@@ -10,7 +10,10 @@ set -eux
 
 echo '{
 	"documents": [
-	{"text": "Characters in the wild imaginary west can be one of four classes, gunslinger, hunter, doctor and mechanic."}
+	{"text": "Characters in the wild imaginary west can be one of four classes, gunslinger, hunter, doctor and mechanic."},
+  {"text": "To repell monsters, you need to use a piece of technology called a farstall."},
+  {"text": "When fighting monsters, being in a mech is very useful as it provides gunpower and protection."},
+  {"text": "Farstall can be carried by human in a backpack, on a horse or on a mech. Bigger forstalls works against bigger monsters."}
 ]}' | tr -d "\n" | curl \
 		-X POST \
     -H 'Content-Type: application/json' \
